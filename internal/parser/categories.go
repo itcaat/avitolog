@@ -1,13 +1,9 @@
 package parser
 
 import (
-	"fmt"
-	"log"
 	"net/url"
 	"strings"
-
-	"github.com/PuerkitoBio/goquery"
-	"github.com/gocolly/colly/v2"
+	
 	"github.com/itcaat/avitolog/internal/models"
 )
 
@@ -15,227 +11,141 @@ const (
 	baseURL = "https://www.avito.ru"
 )
 
-// GetCategories fetches all main categories and their subcategories from Avito.ru
+// GetCategories returns a predefined list of main categories and their subcategories from Avito.ru
 func GetCategories() ([]models.Category, error) {
-	var categories []models.Category
-	var categoryMap = make(map[string]models.Category) // Use a map to avoid duplicates
-
-	c := colly.NewCollector(
-		colly.AllowedDomains("www.avito.ru", "avito.ru"),
-		colly.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
-	)
-
-	// Add debugging callbacks
-	c.OnRequest(func(r *colly.Request) {
-		log.Println("Visiting", r.URL)
-	})
-
-	c.OnError(func(_ *colly.Response, err error) {
-		log.Println("Error:", err)
-	})
-
-	c.OnResponse(func(r *colly.Response) {
-		log.Printf("Received response from Avito.ru, size: %d bytes\n", len(r.Body))
-	})
-
-	// Find categories from visual rubricator grid
-	c.OnHTML("div.visual-rubricator-grid-s6aQm a.visual-rubricator-gridItem-MiBU_", func(e *colly.HTMLElement) {
-		catName := cleanText(e.DOM.Find("p").Text())
-		href := e.Attr("href")
-		if href != "" && catName != "" {
-			url := normalizeURL(href)
-			// Create or update the category
-			if existingCat, found := categoryMap[url]; found {
-				// Already exists, just ensure name is filled
-				if existingCat.Name == "" {
-					existingCat.Name = catName
-					categoryMap[url] = existingCat
-				}
-			} else {
-				categoryMap[url] = models.Category{
-					Name:          catName,
-					URL:           url,
-					Subcategories: []models.Category{},
-				}
-			}
-			log.Printf("Found category in visual grid: %s (%s)\n", catName, url)
-		}
-	})
-
-	// Find categories from dropdown catalog menu
-	c.OnHTML("div.index-module-nav-catalogs-_9ZX2 div.index-module-nav-catalog-item-a9Xx9 a", func(e *colly.HTMLElement) {
-		catName := cleanText(e.Text)
-		href := e.Attr("href")
-		if href != "" && catName != "" {
-			url := normalizeURL(href)
-			categoryMap[url] = models.Category{
-				Name:          catName,
-				URL:           url,
-				Subcategories: []models.Category{},
-			}
-			log.Printf("Found category in dropdown menu: %s (%s)\n", catName, url)
-		}
-	})
-
-	// Find categories in mini-menu
-	c.OnHTML("div.top-rubricator-hide-PSmtS a", func(e *colly.HTMLElement) {
-		catName := cleanText(e.Text)
-		href := e.Attr("href")
-		if href != "" && catName != "" {
-			url := normalizeURL(href)
-			// Skip if already exists
-			if _, found := categoryMap[url]; !found {
-				categoryMap[url] = models.Category{
-					Name:          catName,
-					URL:           url,
-					Subcategories: []models.Category{},
-				}
-				log.Printf("Found category in mini-menu: %s (%s)\n", catName, url)
-			}
-		}
-	})
-
-	// Find more categories from top navigation
-	c.OnHTML("ul.index-module-nav-stRnY li.index-module-nav-item-queVi a", func(e *colly.HTMLElement) {
-		catName := cleanText(e.Text)
-		href := e.Attr("href")
-		if strings.HasPrefix(href, "/") && catName != "" {
-			url := normalizeURL(href)
-			// Skip if already exists
-			if _, found := categoryMap[url]; !found {
-				categoryMap[url] = models.Category{
-					Name:          catName,
-					URL:           url,
-					Subcategories: []models.Category{},
-				}
-				log.Printf("Found category in top nav: %s (%s)\n", catName, url)
-			}
-		}
-	})
-
-	// Find service links in mini-menu (may contain additional categories)
-	c.OnHTML("div.service-item-QPvjs", func(e *colly.HTMLElement) {
-		parent := e.DOM.Parent()
-		if href, exists := parent.Attr("href"); exists {
-			catName := cleanText(e.DOM.Find("span").Text())
-			if href != "" && catName != "" {
-				url := normalizeURL(href)
-				// Skip if already exists
-				if _, found := categoryMap[url]; !found {
-					categoryMap[url] = models.Category{
-						Name:          catName,
-						URL:           url,
-						Subcategories: []models.Category{},
-					}
-					log.Printf("Found category in services menu: %s (%s)\n", catName, url)
-				}
-			}
-		}
-	})
-
-	// Start scraping
-	err := c.Visit(baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("error visiting %s: %w", baseURL, err)
-	}
-
-	c.Wait()
-
-	// If we found any categories, visit each to find subcategories
-	if len(categoryMap) > 0 {
-		// Convert map to slice
-		for _, cat := range categoryMap {
-			categories = append(categories, cat)
-		}
-
-		// Process each category to find subcategories
-		for i := range categories {
-			if strings.Contains(categories[i].URL, "/all/") {
-				subcats, err := getSubcategories(categories[i].URL)
-				if err != nil {
-					log.Printf("Error getting subcategories for %s: %v", categories[i].URL, err)
-					continue
-				}
-				categories[i].Subcategories = subcats
-			}
-		}
-	}
-
-	return categories, nil
-}
-
-// getSubcategories fetches subcategories from a category page
-func getSubcategories(categoryURL string) ([]models.Category, error) {
-	var subcategories []models.Category
-
-	c := colly.NewCollector(
-		colly.AllowedDomains("www.avito.ru", "avito.ru"),
-		colly.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
-		colly.MaxDepth(1),
-	)
-
-	// Look for subcategory links in sidebar
-	c.OnHTML("div[data-marker='category-map']", func(e *colly.HTMLElement) {
-		log.Println("Found category map")
-
-		// Find all subcategory links
-		e.DOM.Find("a").Each(func(_ int, s *goquery.Selection) {
-			name := cleanText(s.Text())
-			href, exists := s.Attr("href")
-			if exists && name != "" {
-				subcategories = append(subcategories, models.Category{
-					Name: name,
-					URL:  normalizeURL(href),
-				})
-				log.Printf("Found subcategory: %s (%s)\n", name, href)
-			}
-		})
-	})
-
-	// Look for alternative subcategory structure
-	c.OnHTML("ul.rubricator-list", func(e *colly.HTMLElement) {
-		log.Println("Found rubricator list")
-
-		e.DOM.Find("li a").Each(func(_ int, s *goquery.Selection) {
-			name := cleanText(s.Text())
-			href, exists := s.Attr("href")
-			if exists && name != "" {
-				// Don't add duplicates
-				isDuplicate := false
-				for _, existingSub := range subcategories {
-					if existingSub.URL == normalizeURL(href) {
-						isDuplicate = true
-						break
-					}
-				}
-
-				if !isDuplicate {
-					subcategories = append(subcategories, models.Category{
-						Name: name,
-						URL:  normalizeURL(href),
-					})
-					log.Printf("Found subcategory in rubricator: %s (%s)\n", name, href)
-				}
-			}
-		})
-	})
-
-	// Visit the category page
-	err := c.Visit(categoryURL)
-	if err != nil {
-		return nil, fmt.Errorf("error visiting category page: %w", err)
-	}
-
-	c.Wait()
-	return subcategories, nil
-}
-
-// cleanText removes extra whitespace and normalizes text
-func cleanText(text string) string {
-	// Replace newlines and multiple spaces with single spaces
-	cleaned := strings.ReplaceAll(text, "\n", " ")
-	cleaned = strings.Join(strings.Fields(cleaned), " ")
-	return strings.TrimSpace(cleaned)
+	// Define the main categories with their common subcategories
+	// This structure is based on the actual categories visible on Avito.ru
+	return []models.Category{
+		{
+			Name: "Транспорт",
+			URL:  "https://www.avito.ru/all/transport",
+			Subcategories: []models.Category{
+				{Name: "Автомобили", URL: "https://www.avito.ru/all/avtomobili"},
+				{Name: "Мотоциклы и мототехника", URL: "https://www.avito.ru/all/mototsikly_i_mototehnika"},
+				{Name: "Грузовики и спецтехника", URL: "https://www.avito.ru/all/gruzoviki_i_spetstehnika"},
+				{Name: "Водный транспорт", URL: "https://www.avito.ru/all/vodnyy_transport"},
+				{Name: "Запчасти и аксессуары", URL: "https://www.avito.ru/all/zapchasti_i_aksessuary"},
+			},
+		},
+		{
+			Name: "Недвижимость",
+			URL:  "https://www.avito.ru/all/nedvizhimost",
+			Subcategories: []models.Category{
+				{Name: "Купить жильё", URL: "https://www.avito.ru/all/nedvizhimost/kvartiry/prodam"},
+				{Name: "Путешествия", URL: "https://www.avito.ru/all/nedvizhimost/kvartiry/posutochno"},
+				{Name: "Снять долгосрочно", URL: "https://www.avito.ru/all/nedvizhimost/kvartiry/sdam"},
+				{Name: "Коммерческая недвижимость", URL: "https://www.avito.ru/all/kommercheskaya_nedvizhimost"},
+				{Name: "Дома, дачи, коттеджи", URL: "https://www.avito.ru/all/doma_dachi_kottedzhi"},
+				{Name: "Земельные участки", URL: "https://www.avito.ru/all/zemelnye_uchastki"},
+				{Name: "Гаражи и машиноместа", URL: "https://www.avito.ru/all/garazhi_i_mashinomesta"},
+			},
+		},
+		{
+			Name: "Работа",
+			URL:  "https://www.avito.ru/all/rabota",
+			Subcategories: []models.Category{
+				{Name: "Вакансии", URL: "https://www.avito.ru/all/vakansii"},
+				{Name: "Резюме", URL: "https://www.avito.ru/all/rezume"},
+			},
+		},
+		{
+			Name: "Услуги",
+			URL:  "https://www.avito.ru/all/predlozheniya_uslug",
+			Subcategories: []models.Category{
+				{Name: "Строительство и ремонт", URL: "https://www.avito.ru/all/predlozheniya_uslug/stroitelstvo_remont_montazh"},
+				{Name: "Перевозки и аренда транспорта", URL: "https://www.avito.ru/all/predlozheniya_uslug/perevozki_i_arenda_transporta"},
+				{Name: "Красота и здоровье", URL: "https://www.avito.ru/all/predlozheniya_uslug/krasota_zdorove"},
+				{Name: "Обучение и курсы", URL: "https://www.avito.ru/all/predlozheniya_uslug/obuchenie_kursy"},
+				{Name: "Установка техники", URL: "https://www.avito.ru/all/predlozheniya_uslug/remont_i_obsluzhivanie_tehniki"},
+				{Name: "Деловые услуги", URL: "https://www.avito.ru/all/predlozheniya_uslug/delovye_uslugi"},
+				{Name: "Мастер на час", URL: "https://www.avito.ru/all/predlozheniya_uslug/master_na_chas"},
+				{Name: "Автосервис", URL: "https://www.avito.ru/all/predlozheniya_uslug/transport_perevozki/avtoservis"},
+				{Name: "Уборка и помощь по хозяйству", URL: "https://www.avito.ru/all/predlozheniya_uslug/bytovye_uslugi"},
+			},
+		},
+		{
+			Name: "Личные вещи",
+			URL:  "https://www.avito.ru/all/lichnye_veschi",
+			Subcategories: []models.Category{
+				{Name: "Одежда, обувь, аксессуары", URL: "https://www.avito.ru/all/odezhda_obuv_aksessuary"},
+				{Name: "Детская одежда и обувь", URL: "https://www.avito.ru/all/detskaya_odezhda_i_obuv"},
+				{Name: "Товары для детей и игрушки", URL: "https://www.avito.ru/all/tovary_dlya_detey_i_igrushki"},
+				{Name: "Часы и украшения", URL: "https://www.avito.ru/all/chasy_i_ukrasheniya"},
+				{Name: "Красота и здоровье", URL: "https://www.avito.ru/all/krasota_i_zdorove"},
+			},
+		},
+		{
+			Name: "Для дома и дачи",
+			URL:  "https://www.avito.ru/all/dlya_doma_i_dachi",
+			Subcategories: []models.Category{
+				{Name: "Бытовая техника", URL: "https://www.avito.ru/all/bytovaya_tehnika"},
+				{Name: "Мебель и интерьер", URL: "https://www.avito.ru/all/mebel_i_interer"},
+				{Name: "Посуда и товары для кухни", URL: "https://www.avito.ru/all/posuda_i_tovary_dlya_kuhni"},
+				{Name: "Продукты питания", URL: "https://www.avito.ru/all/produkty_pitaniya"},
+				{Name: "Ремонт и строительство", URL: "https://www.avito.ru/all/remont_i_stroitelstvo"},
+				{Name: "Растения", URL: "https://www.avito.ru/all/rasteniya"},
+			},
+		},
+		{
+			Name: "Запчасти и аксессуары",
+			URL:  "https://www.avito.ru/all/zapchasti_i_aksessuary",
+			Subcategories: []models.Category{
+				{Name: "Запчасти", URL: "https://www.avito.ru/all/zapchasti_i_aksessuary/zapchasti"},
+				{Name: "Шины, диски и колёса", URL: "https://www.avito.ru/all/zapchasti_i_aksessuary/shiny_diski_i_kolesa"},
+				{Name: "Аксессуары", URL: "https://www.avito.ru/all/zapchasti_i_aksessuary/aksessuary"},
+				{Name: "Автозвук", URL: "https://www.avito.ru/all/zapchasti_i_aksessuary/avtozvuk"},
+				{Name: "Инструменты", URL: "https://www.avito.ru/all/zapchasti_i_aksessuary/instrumenty"},
+				{Name: "Мототехника", URL: "https://www.avito.ru/all/zapchasti_i_aksessuary/mototsikly_mopedy/zapchasti_i_aksessuary"},
+			},
+		},
+		{
+			Name: "Электроника",
+			URL:  "https://www.avito.ru/all/bytovaya_elektronika",
+			Subcategories: []models.Category{
+				{Name: "Аудио и видео", URL: "https://www.avito.ru/all/audio_i_video"},
+				{Name: "Игры, приставки и программы", URL: "https://www.avito.ru/all/igry_pristavki_i_programmy"},
+				{Name: "Компьютеры, ноутбуки и ПО", URL: "https://www.avito.ru/all/nastolnye_kompyutery"},
+				{Name: "Оргтехника и расходники", URL: "https://www.avito.ru/all/orgtehnika_i_rashodniki"},
+				{Name: "Планшеты и электронные книги", URL: "https://www.avito.ru/all/planshety_i_elektronnye_knigi"},
+				{Name: "Телефоны", URL: "https://www.avito.ru/all/telefony"},
+				{Name: "Товары для компьютера", URL: "https://www.avito.ru/all/tovary_dlya_kompyutera"},
+				{Name: "Фототехника", URL: "https://www.avito.ru/all/fototehnika"},
+			},
+		},
+		{
+			Name: "Хобби и отдых",
+			URL:  "https://www.avito.ru/all/hobbi_i_otdyh",
+			Subcategories: []models.Category{
+				{Name: "Билеты и путешествия", URL: "https://www.avito.ru/all/bilety_i_puteshestviya"},
+				{Name: "Велосипеды", URL: "https://www.avito.ru/all/velosipedy"},
+				{Name: "Книги и журналы", URL: "https://www.avito.ru/all/knigi_i_zhurnaly"},
+				{Name: "Коллекционирование", URL: "https://www.avito.ru/all/kollektsionirovanie"},
+				{Name: "Музыкальные инструменты", URL: "https://www.avito.ru/all/muzykalnye_instrumenty"},
+				{Name: "Охота и рыбалка", URL: "https://www.avito.ru/all/ohota_i_rybalka"},
+				{Name: "Спорт и отдых", URL: "https://www.avito.ru/all/sport_i_otdyh"},
+			},
+		},
+		{
+			Name: "Животные",
+			URL:  "https://www.avito.ru/all/zhivotnye",
+			Subcategories: []models.Category{
+				{Name: "Собаки", URL: "https://www.avito.ru/all/sobaki"},
+				{Name: "Кошки", URL: "https://www.avito.ru/all/koshki"},
+				{Name: "Аквариумные рыбки", URL: "https://www.avito.ru/all/akvariumnye_rybki"},
+				{Name: "Птицы", URL: "https://www.avito.ru/all/ptitsy"},
+				{Name: "Грызуны", URL: "https://www.avito.ru/all/gryzuny"},
+				{Name: "Товары для животных", URL: "https://www.avito.ru/all/tovary_dlya_zhivotnyh"},
+			},
+		},
+		{
+			Name: "Для бизнеса",
+			URL:  "https://www.avito.ru/all/dlya_biznesa",
+			Subcategories: []models.Category{
+				{Name: "Готовый бизнес", URL: "https://www.avito.ru/all/gotoviy_biznes"},
+				{Name: "Оборудование для бизнеса", URL: "https://www.avito.ru/all/oborudovanie_dlya_biznesa"},
+			},
+		},
+	}, nil
 }
 
 // normalizeURL ensures the URL is absolute
@@ -243,25 +153,25 @@ func normalizeURL(href string) string {
 	if strings.HasPrefix(href, "http") {
 		return href
 	}
-
+	
 	if strings.HasPrefix(href, "//") {
 		return "https:" + href
 	}
-
+	
 	if strings.HasPrefix(href, "/") {
 		return baseURL + href
 	}
-
+	
 	// Try to parse the URL to handle other cases
 	parsedURL, err := url.Parse(href)
 	if err != nil {
 		return baseURL + "/" + href
 	}
-
+	
 	// If parsed successfully but is relative
 	if !parsedURL.IsAbs() {
 		return baseURL + "/" + href
 	}
-
+	
 	return href
 }
