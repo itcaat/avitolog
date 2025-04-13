@@ -763,3 +763,179 @@ func parseDate(dateStr string) time.Time {
 	// Default to current time if parsing fails
 	return now
 }
+
+// ParseItemsFromHTML extracts advertisement items (title, URL, price) from HTML content
+func ParseItemsFromHTML(htmlContent string) ([]models.Listing, error) {
+	var listings []models.Listing
+
+	// Create a goquery document from the HTML content
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+	if err != nil {
+		return nil, fmt.Errorf("error parsing HTML: %w", err)
+	}
+
+	// Look for item containers using various selectors that might match Avito's structure
+	var itemSelectors = []string{
+		"div[data-marker='item']",
+		"div[data-marker='item-card']",
+		"div.iva-item-root",
+		"div.styles-item-m0DD4",
+		"div.js-item",
+		"div.item",
+		"div.item-card",
+	}
+
+	// Try each selector until we find items
+	found := false
+	for _, selector := range itemSelectors {
+		items := doc.Find(selector)
+		if items.Length() > 0 {
+			log.Printf("Found %d items using selector: %s\n", items.Length(), selector)
+			
+			items.Each(func(i int, item *goquery.Selection) {
+				listing := models.Listing{
+					Attributes: make(map[string]string),
+				}
+
+				// Extract ID from data attribute or URL
+				id, exists := item.Attr("data-item-id")
+				if !exists {
+					// Try to extract from href attribute
+					itemURLNode := item.Find("a[href*='/item/']").First()
+					if itemURLNode.Length() > 0 {
+						href, exists := itemURLNode.Attr("href")
+						if exists {
+							matches := itemIDRegex.FindStringSubmatch(href)
+							if len(matches) > 1 {
+								if matches[1] != "" {
+									id = matches[1]
+								} else if matches[2] != "" {
+									id = matches[2]
+								}
+							}
+						}
+					}
+				}
+				listing.ID = id
+
+				// Extract title
+				titleSelectors := []string{
+					"h3[itemprop='name']",
+					"*[data-marker='item-title']",
+					"div.title",
+					"h3.title",
+					"a.title",
+					"div.snippet-title",
+				}
+				
+				for _, titleSelector := range titleSelectors {
+					titleNode := item.Find(titleSelector).First()
+					if titleNode.Length() > 0 {
+						listing.Title = strings.TrimSpace(titleNode.Text())
+						break
+					}
+				}
+
+				// If no title found yet, look for links with text
+				if listing.Title == "" {
+					item.Find("a").Each(func(_ int, a *goquery.Selection) {
+						if listing.Title == "" && strings.TrimSpace(a.Text()) != "" {
+							href, exists := a.Attr("href")
+							if exists && strings.Contains(href, "/item/") {
+								listing.Title = strings.TrimSpace(a.Text())
+							}
+						}
+					})
+				}
+
+				// Extract URL
+				urlNode := item.Find("a[href*='/item/']").First()
+				if urlNode.Length() > 0 {
+					href, exists := urlNode.Attr("href")
+					if exists {
+						listing.URL = normalizeURL(href)
+					}
+				}
+
+				// Extract price
+				priceSelectors := []string{
+					"*[data-marker='item-price']",
+					"span.price-text-_YGDY",
+					"span.price",
+					"div.price",
+					"span[itemprop='price']",
+					"div.snippet-price",
+				}
+				
+				for _, priceSelector := range priceSelectors {
+					priceNode := item.Find(priceSelector).First()
+					if priceNode.Length() > 0 {
+						priceText := strings.TrimSpace(priceNode.Text())
+						if priceText != "" {
+							listing.Price = parsePrice(priceText)
+							break
+						}
+					}
+				}
+
+				// Only add if we have at least a title or URL
+				if listing.Title != "" || listing.URL != "" {
+					listings = append(listings, listing)
+				}
+			})
+			
+			found = true
+			break
+		}
+	}
+
+	// If no items found with specific selectors, try a more general approach
+	if !found || len(listings) == 0 {
+		log.Println("No items found with specific selectors, trying fallback approach")
+		
+		// Look for any link that might be an item
+		doc.Find("a[href]").Each(func(_ int, a *goquery.Selection) {
+			href, exists := a.Attr("href")
+			if exists && strings.Contains(href, "/item/") {
+				title := strings.TrimSpace(a.Text())
+				
+				// If no text in the anchor itself, look for text in children
+				if title == "" {
+					title = strings.TrimSpace(a.Find("h3, div.title, span.title").First().Text())
+				}
+
+				// Skip if no title found
+				if title == "" {
+					return
+				}
+
+				listing := models.Listing{
+					Title: title,
+					URL:   normalizeURL(href),
+				}
+
+				// Extract ID from URL
+				matches := itemIDRegex.FindStringSubmatch(href)
+				if len(matches) > 1 {
+					if matches[1] != "" {
+						listing.ID = matches[1]
+					} else if matches[2] != "" {
+						listing.ID = matches[2]
+					}
+				}
+
+				// Look for price near this element
+				// Either a sibling or a child within the parent container
+				parent := a.Parent()
+				priceText := strings.TrimSpace(parent.Find("span.price, div.price, *[data-marker='item-price']").First().Text())
+				if priceText != "" {
+					listing.Price = parsePrice(priceText)
+				}
+
+				listings = append(listings, listing)
+			}
+		})
+	}
+
+	return listings, nil
+}
