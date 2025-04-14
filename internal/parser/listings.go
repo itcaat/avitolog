@@ -791,7 +791,7 @@ func ParseItemsFromHTML(htmlContent string) ([]models.Listing, error) {
 		items := doc.Find(selector)
 		if items.Length() > 0 {
 			log.Printf("Found %d items using selector: %s\n", items.Length(), selector)
-			
+
 			items.Each(func(i int, item *goquery.Selection) {
 				listing := models.Listing{
 					Attributes: make(map[string]string),
@@ -827,7 +827,7 @@ func ParseItemsFromHTML(htmlContent string) ([]models.Listing, error) {
 					"a.title",
 					"div.snippet-title",
 				}
-				
+
 				for _, titleSelector := range titleSelectors {
 					titleNode := item.Find(titleSelector).First()
 					if titleNode.Length() > 0 {
@@ -866,7 +866,7 @@ func ParseItemsFromHTML(htmlContent string) ([]models.Listing, error) {
 					"span[itemprop='price']",
 					"div.snippet-price",
 				}
-				
+
 				for _, priceSelector := range priceSelectors {
 					priceNode := item.Find(priceSelector).First()
 					if priceNode.Length() > 0 {
@@ -883,7 +883,7 @@ func ParseItemsFromHTML(htmlContent string) ([]models.Listing, error) {
 					listings = append(listings, listing)
 				}
 			})
-			
+
 			found = true
 			break
 		}
@@ -892,13 +892,13 @@ func ParseItemsFromHTML(htmlContent string) ([]models.Listing, error) {
 	// If no items found with specific selectors, try a more general approach
 	if !found || len(listings) == 0 {
 		log.Println("No items found with specific selectors, trying fallback approach")
-		
+
 		// Look for any link that might be an item
 		doc.Find("a[href]").Each(func(_ int, a *goquery.Selection) {
 			href, exists := a.Attr("href")
 			if exists && strings.Contains(href, "/item/") {
 				title := strings.TrimSpace(a.Text())
-				
+
 				// If no text in the anchor itself, look for text in children
 				if title == "" {
 					title = strings.TrimSpace(a.Find("h3, div.title, span.title").First().Text())

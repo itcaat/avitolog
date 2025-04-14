@@ -3,7 +3,7 @@ package parser
 import (
 	"net/url"
 	"strings"
-	
+
 	"github.com/itcaat/avitolog/internal/models"
 )
 
@@ -153,25 +153,25 @@ func normalizeURL(href string) string {
 	if strings.HasPrefix(href, "http") {
 		return href
 	}
-	
+
 	if strings.HasPrefix(href, "//") {
 		return "https:" + href
 	}
-	
+
 	if strings.HasPrefix(href, "/") {
 		return baseURL + href
 	}
-	
+
 	// Try to parse the URL to handle other cases
 	parsedURL, err := url.Parse(href)
 	if err != nil {
 		return baseURL + "/" + href
 	}
-	
+
 	// If parsed successfully but is relative
 	if !parsedURL.IsAbs() {
 		return baseURL + "/" + href
 	}
-	
+
 	return href
 }
